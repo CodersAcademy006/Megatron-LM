@@ -1,0 +1,84 @@
+name: Fork CI Mirror - CPU-only lint/style checks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+  issue_comment:
+    types: [created]
+
+jobs:
+  check-trigger:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.trigger-check.outputs.should_run }}
+    steps:
+      - name: Check if PR and /run-ci-mirror comment
+        id: trigger-check
+        if: github.event_name == 'issue_comment' && github.event.issue.pull_request
+        run: |
+          if [[ "${{ github.event.comment.body }}" == *"/run-ci-mirror"* ]]; then
+            echo "should_run=true" >> $GITHUB_OUTPUT
+          else
+            echo "should_run=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Auto-run on PR event
+        id: auto-trigger
+        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+        run: |
+          echo "should_run=true" >> $GITHUB_OUTPUT
+
+  linting:
+    runs-on: ubuntu-latest
+    needs: check-trigger
+    if: |
+      needs.check-trigger.outputs.should_run == 'true' || github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v1
+        with:
+          version: 0.7.2
+
+      - name: Install linting tools
+        run: |
+          # Install the lint tools directly rather than `uv sync`, which resolves
+          # the full lockfile and tries to BUILD git-sourced CUDA-only deps
+          # (flash_mla) that cannot compile on a CPU GitHub-hosted runner.
+          # Versions pinned to match the pyproject.toml `linting` group + mypy
+          # (invoked by autoformat.sh).
+          uv venv
+          uv pip install "ruff~=0.9.0" "black==24.4.2" "isort==5.13.2" \
+            "flake8==7.1.0" "pylint==3.2.6" "mypy"
+
+      - name: Get base ref
+        id: get-base
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            BASE_REF="${{ github.base_ref }}"
+          else
+            BASE_REF="main"
+          fi
+          echo "base_ref=${BASE_REF}" >> $GITHUB_OUTPUT
+
+      - name: Run linting
+        run: |
+          export PATH=".venv/bin:$PATH"
+          export GITLAB_ENDPOINT=github.com
+          export CI_PROJECT_NAMESPACE=NVIDIA
+          export BASE_REF="${{ steps.get-base.outputs.base_ref }}"
+          export CHECK_ONLY=true
+          export SKIP_DOCS=false
+          # autoformat.sh diffs changed files against `autoformatter-remote/$BASE_REF`,
+          # adding that remote with `|| true`. Pre-register it pointing at THIS fork so
+          # the mirror lints only what this branch changed relative to the fork's own
+          # base — not the (possibly drifted) upstream NVIDIA main.
+          git remote add autoformatter-remote \
+            "https://github.com/${{ github.repository }}.git" || true
+          git fetch autoformatter-remote "${BASE_REF}"
+          bash tools/autoformat.sh
