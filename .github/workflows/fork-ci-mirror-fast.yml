@@ -1,0 +1,70 @@
+name: Fork CI Mirror - CPU-only lint/style checks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+  issue_comment:
+    types: [created]
+
+jobs:
+  check-trigger:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.trigger-check.outputs.should_run }}
+    steps:
+      - name: Check if PR and /run-ci-mirror comment
+        id: trigger-check
+        if: github.event_name == 'issue_comment' && github.event.issue.pull_request
+        run: |
+          if [[ "${{ github.event.comment.body }}" == *"/run-ci-mirror"* ]]; then
+            echo "should_run=true" >> $GITHUB_OUTPUT
+          else
+            echo "should_run=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Auto-run on PR event
+        id: auto-trigger
+        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+        run: |
+          echo "should_run=true" >> $GITHUB_OUTPUT
+
+  linting:
+    runs-on: ubuntu-latest
+    needs: check-trigger
+    if: |
+      needs.check-trigger.outputs.should_run == 'true' || github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v1
+        with:
+          version: 0.7.2
+
+      - name: Install linting tools
+        run: |
+          uv sync --locked --only-group linting
+
+      - name: Get base ref
+        id: get-base
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            BASE_REF="${{ github.base_ref }}"
+          else
+            BASE_REF="main"
+          fi
+          echo "base_ref=${BASE_REF}" >> $GITHUB_OUTPUT
+
+      - name: Run linting
+        run: |
+          export PATH=".venv/bin:$PATH"
+          export GITLAB_ENDPOINT=github.com
+          export CI_PROJECT_NAMESPACE=NVIDIA
+          export BASE_REF="${{ steps.get-base.outputs.base_ref }}"
+          export CHECK_ONLY=true
+          export SKIP_DOCS=false
+          bash tools/autoformat.sh
