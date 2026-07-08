@@ -47,7 +47,10 @@ jobs:
 
       - name: Install linting tools
         run: |
-          uv sync --locked --only-group linting
+          # --no-install-project: install only the linting group (ruff/black/isort/
+          # flake8/pylint); do NOT build megatron-core, which drags in CUDA-only
+          # packages (flash_mla) that cannot build on a CPU GitHub-hosted runner.
+          uv sync --locked --only-group linting --no-install-project
 
       - name: Get base ref
         id: get-base
