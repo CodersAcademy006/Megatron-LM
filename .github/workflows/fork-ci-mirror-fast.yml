@@ -74,4 +74,11 @@ jobs:
           export BASE_REF="${{ steps.get-base.outputs.base_ref }}"
           export CHECK_ONLY=true
           export SKIP_DOCS=false
+          # autoformat.sh diffs changed files against `autoformatter-remote/$BASE_REF`,
+          # adding that remote with `|| true`. Pre-register it pointing at THIS fork so
+          # the mirror lints only what this branch changed relative to the fork's own
+          # base — not the (possibly drifted) upstream NVIDIA main.
+          git remote add autoformatter-remote \
+            "https://github.com/${{ github.repository }}.git" || true
+          git fetch autoformatter-remote "${BASE_REF}"
           bash tools/autoformat.sh
